@@ -1,0 +1,249 @@
+---
+title: "Multinomial Logistic Regression"
+author: "Amy Schneider & Alonna Guerrero"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(nnet)
+library(GGally)
+library(tidyverse)
+
+```
+
+## Introduction
+Multinomial Logistic Regression can be used to model categorical outcome variables when more than one outcome category exists.  The model produces a prediction of whether the outcome falls into each outcome category as a function of the predictor variables.  Like other logistic regression models, the output will be a log odds.
+
+## About the Data:
+
+https://www.kaggle.com/datasets/shariful07/student-mental-health
+
+This Kaggle data set was collected via a survey conducted by Google forms of university students (International Islamic University Malaysia) in order to examine their current academic situation and mental health.
+
+This data set is appropriate for multinomial logistic regression as our outcome variable of GPA range has multiple buckets, that we can consider categorical variables. We will start out by exploring the data and the assumptions of the model to confirm that the data meets the criteria for the model.
+
+In our data set we have the following variables:
+ - time - time data collected (timestamp from Google form submission)
+ - gender - Male or Female
+ - age - integer
+ - course - free form entry by student of course
+ - year - year within university studies (ranges from 1 to 4)
+ - gpa_range - categorial ranges: 3.50-4.00, 3.00-3.49, 2.50-2.99, 2.00-2.49, 0-1.99
+ - married - whether or not the student is married (Yes or No)
+ - depression - whether or not the student has depression (Yes or No)
+ - anxiety - whether or not the student has anxiety (Yes or No)
+ - panic - whether or not the student has panic attacks (Yes or No)
+ - treatment - whether or not the student has sought treatment for mental health issues identified (Yes or No)
+
+## Importing Data
+
+We start out by loading our data set into memory and adding in column labels that are a single, short string. 
+
+```{r}
+
+#data <- read.csv("~/Desktop/stats_final/Student Mental health.csv", stringsAsFactors=FALSE, header=T) #Amy readin
+data <- read.csv("Student Mental health.csv", stringsAsFactors=FALSE, header=T)
+colnames(data) <- c("time", "gender", "age", "course", "year", "gpa_range", "married", "depression", "anxiety", "panic", "treatment")
+head(data) 
+
+```
+## Data Review and Formatting
+
+# Convert to Factors
+In order to perform the analysis, the predictor variables must be converted to factors.
+
+```{r}
+# Convert 'time' variable to a datetime object
+data$time <- as.POSIXct(data$time, format = "%m/%d/%Y %H:%M")
+
+# Convert 'year' variable to a consistent format
+data$year <- gsub("Year", "year", data$year)
+data$year <- factor(data$year, levels = unique(data$year))
+
+
+# Convert model variables to factors
+
+data$gpa_range <- factor(data$gpa_range, levels=c("0 - 1.99", "2.00 - 2.49", "2.50 - 2.99", "3.00 - 3.49", "3.50 - 4.00"))
+data$gender <- factor(data$gender)
+data$age <- factor(data$age)
+data$depression <- factor(data$depression)
+data$anxiety <- factor(data$anxiety)
+data$panic <- factor(data$panic)
+data$treatment <- factor(data$treatment)
+data$married <-factor(data$married)
+
+head(data)
+
+```
+
+# Explore/Visualize Dataset
+We can confirm that all our variables are of the type that we want in order to use multinomial logistic regression. 
+
+
+```{r}
+
+# show variable types
+str(data)
+
+# overview of data
+summary(data)
+
+```
+# Visualize Data
+Once we confirmed we have the data set in the proper format for the model, and after a cursory review of the summary above, we want to further explore the relationship between GPA range, gender, and anxiety.  We will use a ggpairs plot for this.  Ggpairs allows for pairwise comparisons of data within each bucket for our variables.  Each color represents a specific GPA bucket, as well as its counts within the independent variable buckets we seek to explore.
+
+In the summary data, it was apparent that there were more female respondents than males, but we were unable to see how the variables were related to GPA.  This visualization allows us to see there is a higher count of females within the higher GPA ranges and also a higher count of females with anxiety.  Using a multinomial logistic regression will allow us to further explore these relationships.
+
+```{r}
+data %>%
+  select(gpa_range, gender, anxiety) %>%
+  drop_na() %>%
+  ggpairs(mapping = aes(fill = gpa_range))+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+```
+# Clean Data
+In order to further examine the data, we want to remove any cases that are incomplete as well as any data that has an age of other.
+
+```{r}
+
+# Remove NA responses in gpa_range variable
+data <- data[complete.cases(data$gpa_range), ]
+
+# Remove NA responses in age variable
+data <- data[complete.cases(data$age), ]
+
+# Delete rows with age value of "(Other)"
+data <- data[data$age != "(Other)", ]
+
+
+# check
+str(data)
+summary(data)
+
+```
+
+# Visualize our model variables
+Now that we have cleaned the data further, we can have one last look, specifically, at the frequencies of respondents' GPA range with their gender and anxiety.  Based on the below bar chart, we believe that these variables are appropriate for the model.
+
+```{r}
+
+# Calculate frequencies
+freq <- table(data$gpa_range, data$gender, data$anxiety)
+
+# Convert frequencies to a data frame
+df_freq <- as.data.frame.table(freq)
+
+ggplot(df_freq, aes(x = Var1, y = Freq, fill = Var3)) +
+  geom_bar(stat = "identity") +
+  facet_grid(Var2 ~ .) +
+  labs(x = "GPA Range", y = "Frequency", fill = "Anxiety") +  # Label Var3 as "Anxiety"
+  theme_minimal() 
+
+```
+
+Our initial predictions for our model, based on the above visualization, is that the occurrence of anxiety will be a strong predictor of GPA range.
+
+## Build Multinomial Model
+
+Within the nnet package, the multinom() function can be used to apply the model to the data.
+
+Like logistic regression, the output of the model in R is a z-test and a log odds ratio.  It uses a pseudo-R-Squared; the R-squared offered in the output is basically the change in terms of log-likelihood from the intercept-only model to the current model. It does not convey the same information as the R-square for linear regression, even though it is still “the higher, the better”. 
+
+
+```{r}
+#If we wanted to set the reference range for the outcome variable, we could run the below commented code
+#data$gpa_range <- relevel(data$gpa_range, ref = "2.50 - 2.99")
+
+multinom.model <- multinom(gpa_range ~ gender + anxiety, data = data)
+summary(multinom.model)
+
+#In this case, our missing GPA category is 0 - 1.99, so it was used as the reference category for GPA and coefficients can be interpreted relative to it.
+
+#The code below can be run to determine the effective degrees of freedom
+#multinom.model$edf
+
+```
+# Summary of the model
+
+The coefficient values for the predictor variables of gender and anxiety are relative to the reference group chosen.  In this case, the reference groups are genderFemale and anxietyNo.  The coefficients represent "the expected amount of change in the logit for each one unit change in the predictor." In this case, our prediction is the odds of membership in a particular GPA range.
+
+The closer a logistic coefficient is to zero, the less influence a predictor variable has in predicting the logit.
+
+(From http://bayes.acs.unt.edu:8083/BayesContent/class/Jon/Benchmarks/MLR_JDS_Aug2011.pdf)
+
+The intercept term in a multinomial logistic regression model (as in logistic regression models) represents the expected log-odds of the outcome variable when all predictor variables are set to zero or their reference levels. In this case, the intercept represents the expected log-odds of belonging to each GPA range category when the gender is not male and anxiety is not present.
+
+The coefficient for "genderMale" represents the change in the log-odds of belonging to each GPA range category for males compared to females, holding other variables constant. The coefficient for "anxietyYes" represents the change in the log-odds of belonging to each GPA range category for individuals with anxiety compared to those without anxiety, holding other variables constant.
+
+The standard errors associated with the coefficients provide a measure of uncertainty for each estimate. Smaller standard errors suggest more precise estimates, while larger standard errors indicate greater uncertainty. For example, in the category 2.50-2.99, the standard error for the "genderMale" coefficient is high (167.295993), indicating greater uncertainty in the estimate.
+
+The Residual Deviance (193.9389) is a measure of the unexplained variation in the data after accounting for the predictors in the model. The AIC (217.9389) is a measure of the model's relative quality, where a lower value indicates a better fit.
+
+  **Intercept & Coefficient Deep Dive (GPA range 3.00-3.49):** 
+  
+  The intercept is 2.2932741. This means that when gender is not male and anxiety is not present, the expected log-odds of belonging to the 3.00-3.49 GPA range category is 2.2932741.
+  
+  The coefficient for "genderMale" is -0.1899595. This suggests that being male (genderMale = 1) decreases the log-odds of belonging to the 3.00-3.49 GPA range category by 0.1899595 compared to being female (genderMale = 0), holding other variables constant. This means that, all else being equal, being male is associated with a lower likelihood of belonging to that GPA range category.
+  
+  The coefficient for "anxietyYes" is 13.496779. This indicates that having anxiety (anxietyYes = 1) increases the log-odds of belonging to the 3.00-3.49 GPA range category by 13.496779 compared to not having anxiety (anxietyYes = 0), holding other variables constant. In other words, having anxiety is associated with a significantly higher likelihood of belonging to that GPA range category.
+
+## Interpreting The Results
+The output of the model does not provide the p-values to indicate whether a value is significant, so we separately calculate z-tests.  Al
+
+```{r}
+z <- summary(multinom.model)$coefficients/summary(multinom.model)$standard.errors
+z
+
+#We then conduct a two-tailed z-test:
+p <- (1 - pnorm(abs(z), 0, 1)) * 2
+p
+
+```
+The z-scores measure the standard deviations of the coefficients from their expected values. Larger absolute z-scores indicate coefficients that are farther from their expected values, suggesting stronger evidence for the significance of the predictor variable.
+
+  Intercept:
+  The intercept represents the baseline outcome for the reference category (which is not explicitly stated in the results). The z-scores for the intercept in each range reflect the deviation of the outcome from the baseline for each category.
+  
+  genderMale:
+  The z-scores for the "genderMale" variable indicate the significance of being male in comparison to the reference category  (which is not explicitly stated in the results). Negative z-scores suggest that being male is associated with a lower probability of the outcome, while positive z-scores indicate a higher probability. The magnitudes of the z-scores reflect the  strength of the association.
+  
+  anxietyYes:
+  The z-scores for the "anxietyYes" variable indicate the significance of having anxiety (compared to not having anxiety) in predicting the outcome. As with the "genderMale" variable, negative z-scores suggest a lower probability of the outcome associated with having anxiety, while positive z-scores suggest a higher probability.
+
+The p-values indicate the statistical significance of the coefficients in the multinomial logistic regression model. A lower p-value suggests stronger evidence against the null hypothesis, indicating a more significant association between the predictor variable and the outcome.
+
+  Intercept:
+  The p-values for the intercept represent the statistical significance of the baseline outcome for the reference category (which is not explicitly stated in the results). If the p-values are above the chosen significance level (e.g., 0.05), it suggests that the baseline outcome is not significantly different from the reference category.
+  
+  genderMale:
+  The p-values for the "genderMale" variable indicate the statistical significance of being male in comparison to the reference category (which is not explicitly stated in the results). If the p-values are above the chosen significance level, it suggests that being male is not significantly associated with the outcome.
+  
+  anxietyYes:
+  The p-values for the "anxietyYes" variable indicate the statistical significance of having anxiety (compared to not having anxiety) in predicting the outcome. A p-value of 0 suggests a highly significant association between having anxiety and the outcome. However, it's important to consider the specific context and the chosen significance level to interpret the p-value accurately.
+
+
+## Model Performance and Summary
+
+```{r}
+
+#Generate the predicted probabilities based on the model
+predicted_prob <-predict(multinom.model, data, "probs")
+#head(predicted_prob)
+
+#Generate the predicted GPA range for respondents based on the model
+predicted_gpas <- predict(multinom.model, data)
+
+#Create a confusion matrix based on the model
+
+table(predicted_gpas, data$gpa_range)
+```
+Based on the confusion matrix (our predicted GPAs are along the horizontal axis), we incorrectly predicted 11 cases in the 3.00-3.49 range and correctly predicted 14 in that GPA range.  In the 3.50-4.00 range, we incorrectly predicted 36 and correctly predicted 38.  As noted above, the choice of reference category can change the prediction, so that is an option for improving the model.
+
+The data set provided for this analysis is relatively small, which meant our ability to perform any model validation or testing was limited, however understanding the mental health of students relative to their GPA, and hoping to draw conclusions on whether a support system (such as a spouse), treatment, or even a particular major are predictors of GPA is an important question.  Those who have mental health challenges may have the intellectual ability to be high achievers academically, but without the proper coping mechanisms, unable to reach those aspirations.
+
+In our study, the coefficients for genderMale were not significant based on the p-value and an alpha of 0.05, which means that other predictors could be considered other than gender for our specific model. The coefficients for anxietyYes are statistically significant according to the p-values, which suggests that in our model and data set, that the presence of anxiety relative to no anxiety (part of our reference category) is a positive predictor for each of the GPA ranges (with the exception of the 2.00-2.49 range).
+
